@@ -11,6 +11,10 @@ const API_BASE = 'https://api.transitous.org/api/v3/plan';
 const MIN_FETCH_INTERVAL_MS = 60_000;
 const DIRECT_WINDOW_MS = 3 * 60 * 60 * 1000;
 const NUM_ITINERARIES = 4;
+// Fetch more than we display, since MAX_DURATION_MIN filters some out
+// (e.g. the occasional much-slower RB16 routing) — keeps the shown list at 4.
+const FETCH_BATCH_SIZE = 8;
+const MAX_DURATION_MIN = 130; // 2:10 Std — hide unusually slow routings
 const FETCH_TIMEOUT_MS = 12_000;
 const TICK_INTERVAL_MS = 15_000;
 
@@ -95,6 +99,16 @@ function parseItinerary(raw) {
   };
 }
 
+function scheduledDurationMin(it) {
+  const dep = new Date(it.departure.sched).getTime();
+  const arr = new Date(it.arrival.sched).getTime();
+  return Math.round((arr - dep) / 60000);
+}
+
+function withinMaxDuration(it) {
+  return scheduledDurationMin(it) <= MAX_DURATION_MIN;
+}
+
 // ---------- loading orchestration ----------
 
 async function loadDepartures(direction, { force = false } = {}) {
@@ -110,8 +124,8 @@ async function loadDepartures(direction, { force = false } = {}) {
   const { from, to } = stationsForDirection(direction);
 
   try {
-    const primaryPage = await fetchPlanPage(from.id, to.id, { maxTransfers: 0, numItineraries: NUM_ITINERARIES });
-    const primary = primaryPage.itineraries;
+    const primaryPage = await fetchPlanPage(from.id, to.id, { maxTransfers: 0, numItineraries: FETCH_BATCH_SIZE });
+    const primary = primaryPage.itineraries.filter(withinMaxDuration).slice(0, NUM_ITINERARIES);
 
     const hasDirectSoon = primary.some((it) => {
       const t = new Date(it.departure.real || it.departure.sched).getTime();
@@ -120,8 +134,10 @@ async function loadDepartures(direction, { force = false } = {}) {
 
     let secondary = [];
     if (!hasDirectSoon) {
-      const withTransfer = await fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: NUM_ITINERARIES });
-      secondary = withTransfer.itineraries.filter((it) => it.transfers >= 1);
+      const withTransfer = await fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: FETCH_BATCH_SIZE });
+      secondary = withTransfer.itineraries
+        .filter((it) => it.transfers >= 1 && withinMaxDuration(it))
+        .slice(0, NUM_ITINERARIES);
     }
 
     localStorage.setItem(cacheKey(direction), JSON.stringify({
@@ -156,10 +172,10 @@ async function onLoadMore() {
   try {
     const page = await fetchPlanPage(from.id, to.id, {
       maxTransfers: 0,
-      numItineraries: NUM_ITINERARIES,
+      numItineraries: FETCH_BATCH_SIZE,
       pageCursor: more.cursor,
     });
-    more.items.push(...page.itineraries);
+    more.items.push(...page.itineraries.filter(withinMaxDuration));
     more.cursor = page.nextPageCursor;
   } catch (err) {
     console.error('[pendler] load-more failed', err);
@@ -328,10 +344,9 @@ function renderCard(it, now) {
     meta.appendChild(track);
   }
 
-  const durationMin = Math.round((arrSchedMs - depSchedMs) / 60000);
   const duration = document.createElement('span');
   duration.className = 'duration-info';
-  duration.textContent = formatDuration(durationMin);
+  duration.textContent = formatDuration(scheduledDurationMin(it));
   meta.appendChild(duration);
 
   const arrival = document.createElement('span');
