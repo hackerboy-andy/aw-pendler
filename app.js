@@ -245,33 +245,64 @@ function updateTransfersButton() {
   btn.setAttribute('aria-pressed', String(state.showTransfers));
 }
 
+// Fetches transfer pages until they reach at least as far as the primary
+// list already has (via "Später anzeigen") — otherwise turning this on
+// *after* paging ahead would only backfill transfer options for today,
+// silently missing anything past the point primary already reached.
+async function ensureTransferCoverage(direction) {
+  const raw = localStorage.getItem(cacheKey(direction));
+  const payload = raw ? JSON.parse(raw) : null;
+  if (!payload) return;
+
+  const { from, to } = stationsForDirection(direction);
+  const more = moreState[direction] || (moreState[direction] = { items: [], secondaryItems: [], loading: false });
+
+  const primaryAll = payload.primary.concat(more.items);
+  const horizonMs = primaryAll.length
+    ? new Date(primaryAll[primaryAll.length - 1].departure.sched).getTime()
+    : Date.now();
+
+  let secondaryAll = (payload.secondary || []).concat(more.secondaryItems || []);
+  let anchor;
+
+  state.transfersLoading = true;
+  updateTransfersButton();
+  try {
+    for (let guard = 0; guard < 8; guard++) {
+      const coveredMs = secondaryAll.length
+        ? new Date(secondaryAll[secondaryAll.length - 1].departure.sched).getTime()
+        : 0;
+      if (secondaryAll.length && coveredMs >= horizonMs) break;
+
+      const page = await fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: FETCH_BATCH_SIZE, time: anchor });
+      const filtered = page.itineraries.filter((it) => it.transfers >= 1);
+      if (filtered.length === 0) break;
+
+      if (secondaryAll.length === 0) {
+        payload.secondary = filtered;
+      } else {
+        more.secondaryItems.push(...filtered);
+      }
+      secondaryAll = secondaryAll.concat(filtered);
+      anchor = new Date(new Date(filtered[filtered.length - 1].departure.sched).getTime() + 60_000).toISOString();
+    }
+    localStorage.setItem(cacheKey(direction), JSON.stringify(payload));
+  } catch (err) {
+    console.error('[pendler] transfer fetch failed', err);
+    flashMessage('Umstiegsverbindungen gerade nicht ladbar');
+  } finally {
+    state.transfersLoading = false;
+    updateTransfersButton();
+  }
+}
+
 async function onToggleTransfers() {
   const direction = getDirection();
   state.showTransfers = !state.showTransfers;
   updateTransfersButton();
 
   if (state.showTransfers) {
-    const raw = localStorage.getItem(cacheKey(direction));
-    const payload = raw ? JSON.parse(raw) : null;
-    // Transfer options are normally only fetched when no direct train is
-    // coming soon — fetch them on demand the first time this is switched on.
-    if (payload && (!payload.secondary || payload.secondary.length === 0)) {
-      const { from, to } = stationsForDirection(direction);
-      state.transfersLoading = true;
-      updateTransfersButton();
-      try {
-        const withTransfer = await fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: FETCH_BATCH_SIZE });
-        payload.secondary = withTransfer.itineraries.filter((it) => it.transfers >= 1);
-        localStorage.setItem(cacheKey(direction), JSON.stringify(payload));
-      } catch (err) {
-        console.error('[pendler] transfer fetch failed', err);
-        flashMessage('Umstiegsverbindungen gerade nicht ladbar');
-        state.showTransfers = false;
-      } finally {
-        state.transfersLoading = false;
-        updateTransfersButton();
-      }
-    }
+    await ensureTransferCoverage(direction);
   }
   paintFromCache(direction);
 }
