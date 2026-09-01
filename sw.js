@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE_NAME = 'pendler-shell-v1';
+const CACHE_NAME = 'pendler-shell-v2';
 const SHELL_FILES = [
   './',
   './index.html',
@@ -35,18 +35,19 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
   if (event.request.method !== 'GET') return;
 
+  // Network-first: while online, always serve what was just deployed (this
+  // app is still being actively iterated on — stale-while-revalidate meant
+  // a deploy only showed up on the *second* open, which read as "the fix
+  // isn't there" even when it was). Cache is only the offline fallback.
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
-        .then((response) => {
-          if (response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
+    fetch(event.request)
+      .then((response) => {
+        if (response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
