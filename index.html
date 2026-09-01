@@ -27,7 +27,10 @@
 </header>
 
 <main id="app">
-  <p class="status-line" id="status-line" aria-live="polite"></p>
+  <div class="status-row">
+    <p class="status-line" id="status-line" aria-live="polite"></p>
+    <button type="button" class="relax-btn" id="btn-relax" aria-pressed="false">Auch bis 3 Std zeigen</button>
+  </div>
   <div class="error-banner" id="error-banner" role="alert" hidden></div>
 
   <section id="primary-list" class="departure-list" aria-label="Nächste Verbindungen"></section>

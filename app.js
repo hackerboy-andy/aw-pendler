@@ -14,12 +14,15 @@ const NUM_ITINERARIES = 4;
 // Fetch more than we display, since MAX_DURATION_MIN filters some out
 // (e.g. the occasional much-slower RB16 routing) — keeps the shown list at 4.
 const FETCH_BATCH_SIZE = 8;
-const MAX_DURATION_MIN = 130; // 2:10 Std — hide unusually slow routings
+const MAX_DURATION_MIN = 130; // 2:10 Std — hide unusually slow routings by default
+const RELAXED_DURATION_MIN = 180; // 3:00 Std — one-tap escape hatch for a bad connection window
 const FAST_DURATION_MIN = 110; // 1:50 Std — highlight as a best pick
 const FETCH_TIMEOUT_MS = 12_000;
 const TICK_INTERVAL_MS = 15_000;
 
-const state = { lastError: null };
+// showSlow is a session-only override (not persisted) — a one-tap escape
+// hatch for "I'm stuck between two trains", not a settings toggle.
+const state = { lastError: null, showSlow: false };
 // Accumulated "Später anzeigen" pages per direction, in-memory only (not
 // persisted) — reset whenever a fresh network fetch lands for that direction.
 const moreState = {};
@@ -107,6 +110,11 @@ function withinMaxDuration(it) {
   return scheduledDurationMin(it) <= MAX_DURATION_MIN;
 }
 
+function withinEffectiveDuration(it) {
+  const max = state.showSlow ? RELAXED_DURATION_MIN : MAX_DURATION_MIN;
+  return scheduledDurationMin(it) <= max;
+}
+
 // ---------- loading orchestration ----------
 
 async function loadDepartures(direction, { force = false } = {}) {
@@ -122,10 +130,13 @@ async function loadDepartures(direction, { force = false } = {}) {
   const { from, to } = stationsForDirection(direction);
 
   try {
+    // Stored unfiltered by duration — the display filter (strict 2:10h by
+    // default, relaxed to 3h via the "Auch bis 3h zeigen" toggle) is applied
+    // at render time so toggling never needs a fresh network request.
     const primaryPage = await fetchPlanPage(from.id, to.id, { maxTransfers: 0, numItineraries: FETCH_BATCH_SIZE });
-    const primary = primaryPage.itineraries.filter(withinMaxDuration).slice(0, NUM_ITINERARIES);
+    const primary = primaryPage.itineraries;
 
-    const hasDirectSoon = primary.some((it) => {
+    const hasDirectSoon = primary.filter(withinMaxDuration).some((it) => {
       const t = new Date(it.departure.real || it.departure.sched).getTime();
       return t - now <= DIRECT_WINDOW_MS;
     });
@@ -133,9 +144,7 @@ async function loadDepartures(direction, { force = false } = {}) {
     let secondary = [];
     if (!hasDirectSoon) {
       const withTransfer = await fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: FETCH_BATCH_SIZE });
-      secondary = withTransfer.itineraries
-        .filter((it) => it.transfers >= 1 && withinMaxDuration(it))
-        .slice(0, NUM_ITINERARIES);
+      secondary = withTransfer.itineraries.filter((it) => it.transfers >= 1);
     }
 
     localStorage.setItem(cacheKey(direction), JSON.stringify({
@@ -188,7 +197,7 @@ async function onLoadMore() {
       numItineraries: FETCH_BATCH_SIZE,
       time: anchor,
     });
-    more.items.push(...page.itineraries.filter(withinMaxDuration));
+    more.items.push(...page.itineraries);
   } catch (err) {
     console.error('[pendler] load-more failed', err);
     flashMessage('Gerade nicht ladbar — später nochmal versuchen');
@@ -197,6 +206,18 @@ async function onLoadMore() {
     btn.disabled = false;
     paintFromCache(direction);
   }
+}
+
+function updateRelaxButton() {
+  const btn = document.getElementById('btn-relax');
+  btn.textContent = state.showSlow ? 'Nur bis 2:10 Std zeigen' : 'Auch bis 3 Std zeigen';
+  btn.setAttribute('aria-pressed', String(state.showSlow));
+}
+
+function onToggleRelax() {
+  state.showSlow = !state.showSlow;
+  updateRelaxButton();
+  paintFromCache(getDirection());
 }
 
 function onManualRefresh() {
@@ -264,10 +285,14 @@ function paintFromCache(direction) {
   const now = Date.now();
   const more = moreState[direction] || (moreState[direction] = { items: [], loading: false });
 
-  renderList(primaryList, payload.primary.concat(more.items), now);
-  if (payload.secondary && payload.secondary.length) {
+  const primaryVisible = payload.primary.filter(withinEffectiveDuration).slice(0, NUM_ITINERARIES);
+  const moreVisible = more.items.filter(withinEffectiveDuration);
+  renderList(primaryList, primaryVisible.concat(moreVisible), now);
+
+  const secondaryVisible = (payload.secondary || []).filter(withinEffectiveDuration).slice(0, NUM_ITINERARIES);
+  if (secondaryVisible.length) {
     secWrap.hidden = false;
-    renderList(secList, payload.secondary, now);
+    renderList(secList, secondaryVisible, now);
   } else {
     secWrap.hidden = true;
   }
@@ -275,10 +300,15 @@ function paintFromCache(direction) {
   moreBtn.hidden = false;
   if (!more.loading) moreBtn.textContent = 'Später anzeigen';
 
-  const isEmpty = payload.primary.length === 0 && (!payload.secondary || payload.secondary.length === 0);
-  emptyEl.hidden = !isEmpty;
-  if (isEmpty) {
-    emptyEl.innerHTML = `Keine Verbindungen gefunden. <a href="https://bahn.de" target="_blank" rel="noopener">Auf bahn.de nachsehen</a>.`;
+  const visibleTotal = primaryVisible.length + moreVisible.length + secondaryVisible.length;
+  const rawTotal = payload.primary.length + more.items.length + (payload.secondary || []).length;
+  emptyEl.hidden = visibleTotal > 0;
+  if (visibleTotal === 0) {
+    emptyEl.innerHTML = rawTotal > 0 && !state.showSlow
+      ? `Nur langsamere Verbindungen gefunden. <button type="button" class="inline-link" id="btn-empty-relax">Auch bis 3h zeigen</button>.`
+      : `Keine Verbindungen gefunden. <a href="https://bahn.de" target="_blank" rel="noopener">Auf bahn.de nachsehen</a>.`;
+    const relaxLink = document.getElementById('btn-empty-relax');
+    if (relaxLink) relaxLink.addEventListener('click', onToggleRelax);
   }
 
   const stamp = formatTime(payload.fetchedAt);
@@ -445,11 +475,13 @@ function registerServiceWorker() {
 
 function init() {
   registerServiceWorker();
+  updateRelaxButton();
 
   document.getElementById('btn-dir-a').addEventListener('click', () => switchDirection('MUC_NUE'));
   document.getElementById('btn-dir-b').addEventListener('click', () => switchDirection('NUE_MUC'));
   document.getElementById('btn-refresh').addEventListener('click', onManualRefresh);
   document.getElementById('btn-more').addEventListener('click', onLoadMore);
+  document.getElementById('btn-relax').addEventListener('click', onToggleRelax);
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) loadDepartures(getDirection());

@@ -115,11 +115,47 @@ main {
   margin: 0 auto;
 }
 
+.status-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 4px 4px 14px;
+}
+
 .status-line {
   font-size: 13px;
   color: var(--text-muted);
-  margin: 4px 4px 14px;
   min-height: 18px;
+  margin: 0;
+}
+
+.relax-btn {
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 0;
+  cursor: pointer;
+  white-space: nowrap;
+  min-height: 28px;
+}
+
+.relax-btn[aria-pressed="true"] {
+  color: var(--text-muted);
+  text-decoration: underline;
+}
+
+.inline-link {
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 .status-line.is-stale {
