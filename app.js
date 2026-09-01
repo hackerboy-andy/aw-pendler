@@ -15,6 +15,9 @@ const FETCH_TIMEOUT_MS = 12_000;
 const TICK_INTERVAL_MS = 15_000;
 
 const state = { lastError: null };
+// Accumulated "Später anzeigen" pages per direction, in-memory only (not
+// persisted) — reset whenever a fresh network fetch lands for that direction.
+const moreState = {};
 
 // ---------- direction ----------
 
@@ -42,13 +45,14 @@ function cacheKey(dir) {
 
 // ---------- API ----------
 
-async function fetchPlan(fromId, toId, { maxTransfers, numItineraries }) {
+async function fetchPlanPage(fromId, toId, { maxTransfers, numItineraries, pageCursor }) {
   const url = new URL(API_BASE);
   url.searchParams.set('fromPlace', fromId);
   url.searchParams.set('toPlace', toId);
   url.searchParams.set('numItineraries', String(numItineraries));
   url.searchParams.set('transitModes', 'REGIONAL_RAIL,BUS');
   if (maxTransfers !== undefined) url.searchParams.set('maxTransfers', String(maxTransfers));
+  if (pageCursor) url.searchParams.set('pageCursor', pageCursor);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -56,7 +60,10 @@ async function fetchPlan(fromId, toId, { maxTransfers, numItineraries }) {
     const res = await fetch(url.toString(), { signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    return (data.itineraries || []).map(parseItinerary);
+    return {
+      itineraries: (data.itineraries || []).map(parseItinerary),
+      nextPageCursor: data.nextPageCursor || null,
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -103,7 +110,8 @@ async function loadDepartures(direction, { force = false } = {}) {
   const { from, to } = stationsForDirection(direction);
 
   try {
-    const primary = await fetchPlan(from.id, to.id, { maxTransfers: 0, numItineraries: NUM_ITINERARIES });
+    const primaryPage = await fetchPlanPage(from.id, to.id, { maxTransfers: 0, numItineraries: NUM_ITINERARIES });
+    const primary = primaryPage.itineraries;
 
     const hasDirectSoon = primary.some((it) => {
       const t = new Date(it.departure.real || it.departure.sched).getTime();
@@ -112,17 +120,53 @@ async function loadDepartures(direction, { force = false } = {}) {
 
     let secondary = [];
     if (!hasDirectSoon) {
-      const withTransfer = await fetchPlan(from.id, to.id, { maxTransfers: 1, numItineraries: NUM_ITINERARIES });
-      secondary = withTransfer.filter((it) => it.transfers >= 1);
+      const withTransfer = await fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: NUM_ITINERARIES });
+      secondary = withTransfer.itineraries.filter((it) => it.transfers >= 1);
     }
 
-    localStorage.setItem(cacheKey(direction), JSON.stringify({ fetchedAt: Date.now(), primary, secondary }));
+    localStorage.setItem(cacheKey(direction), JSON.stringify({
+      fetchedAt: Date.now(),
+      primary,
+      secondary,
+      primaryCursor: primaryPage.nextPageCursor,
+    }));
+    // Fresh data supersedes anything accumulated via "Später anzeigen".
+    moreState[direction] = { items: [], cursor: primaryPage.nextPageCursor, loading: false };
     state.lastError = null;
   } catch (err) {
     console.error('[pendler] fetch failed', err);
     state.lastError = err;
   } finally {
     setRefreshing(false);
+    paintFromCache(direction);
+  }
+}
+
+async function onLoadMore() {
+  const direction = getDirection();
+  const more = moreState[direction];
+  if (!more || !more.cursor || more.loading) return;
+
+  const { from, to } = stationsForDirection(direction);
+  more.loading = true;
+  const btn = document.getElementById('btn-more');
+  btn.disabled = true;
+  btn.textContent = 'Lädt …';
+
+  try {
+    const page = await fetchPlanPage(from.id, to.id, {
+      maxTransfers: 0,
+      numItineraries: NUM_ITINERARIES,
+      pageCursor: more.cursor,
+    });
+    more.items.push(...page.itineraries);
+    more.cursor = page.nextPageCursor;
+  } catch (err) {
+    console.error('[pendler] load-more failed', err);
+    flashMessage('Gerade nicht ladbar — später nochmal versuchen');
+  } finally {
+    more.loading = false;
+    btn.disabled = false;
     paintFromCache(direction);
   }
 }
@@ -144,6 +188,13 @@ function formatTime(ms) {
   return new Date(ms).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
 }
 
+function formatDuration(min) {
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m === 0 ? `${h} Std` : `${h}:${String(m).padStart(2, '0')} Std`;
+}
+
 function formatCountdown(depMs, now) {
   const diffMin = Math.round((depMs - now) / 60000);
   if (diffMin <= 0) return 'jetzt';
@@ -159,6 +210,7 @@ function paintFromCache(direction) {
   const emptyEl = document.getElementById('empty-state');
   const statusEl = document.getElementById('status-line');
   const errorBanner = document.getElementById('error-banner');
+  const moreBtn = document.getElementById('btn-more');
 
   if (state.lastError) {
     errorBanner.hidden = false;
@@ -171,6 +223,7 @@ function paintFromCache(direction) {
   if (!raw) {
     primaryList.innerHTML = '';
     secWrap.hidden = true;
+    moreBtn.hidden = true;
     emptyEl.hidden = false;
     emptyEl.innerHTML = state.lastError
       ? `Noch keine Daten und gerade keine Verbindung. <a href="https://bahn.de" target="_blank" rel="noopener">Auf bahn.de nachsehen</a>.`
@@ -181,14 +234,18 @@ function paintFromCache(direction) {
 
   const payload = JSON.parse(raw);
   const now = Date.now();
+  const more = moreState[direction] || (moreState[direction] = { items: [], cursor: payload.primaryCursor || null, loading: false });
 
-  renderList(primaryList, payload.primary, now);
+  renderList(primaryList, payload.primary.concat(more.items), now);
   if (payload.secondary && payload.secondary.length) {
     secWrap.hidden = false;
     renderList(secList, payload.secondary, now);
   } else {
     secWrap.hidden = true;
   }
+
+  moreBtn.hidden = !more.cursor;
+  if (!more.loading) moreBtn.textContent = 'Später anzeigen';
 
   const isEmpty = payload.primary.length === 0 && (!payload.secondary || payload.secondary.length === 0);
   emptyEl.hidden = !isEmpty;
@@ -270,6 +327,12 @@ function renderCard(it, now) {
     track.textContent = `Gleis ${firstLeg.fromTrack}`;
     meta.appendChild(track);
   }
+
+  const durationMin = Math.round((arrSchedMs - depSchedMs) / 60000);
+  const duration = document.createElement('span');
+  duration.className = 'duration-info';
+  duration.textContent = formatDuration(durationMin);
+  meta.appendChild(duration);
 
   const arrival = document.createElement('span');
   arrival.className = 'arrival-info';
@@ -358,6 +421,7 @@ function init() {
   document.getElementById('btn-dir-a').addEventListener('click', () => switchDirection('MUC_NUE'));
   document.getElementById('btn-dir-b').addEventListener('click', () => switchDirection('NUE_MUC'));
   document.getElementById('btn-refresh').addEventListener('click', onManualRefresh);
+  document.getElementById('btn-more').addEventListener('click', onLoadMore);
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) loadDepartures(getDirection());

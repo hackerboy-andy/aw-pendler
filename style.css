@@ -1,5 +1,5 @@
 :root {
-  --bg: #f8fafc;
+  --bg: #ffffff;
   --bg-elevated: #ffffff;
   --text: #0f172a;
   --text-muted: #64748b;
@@ -17,29 +17,6 @@
   --error-border: #fecaca;
   --error-text: #991b1b;
   --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 6px rgba(15, 23, 42, 0.05);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0b1120;
-    --bg-elevated: #151d2e;
-    --text: #f1f5f9;
-    --text-muted: #94a3b8;
-    --border: #1f2a3d;
-    --accent: #38bdf8;
-    --accent-bg: #0c2a3d;
-    --delay: #fca5a5;
-    --delay-bg: #3f1414;
-    --ontime: #86efac;
-    --ontime-bg: #0f2e1a;
-    --cancelled: #64748b;
-    --bus: #fbbf24;
-    --bus-bg: #3a2a06;
-    --error-bg: #2a1414;
-    --error-border: #5b1f1f;
-    --error-text: #fca5a5;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 6px rgba(0, 0, 0, 0.25);
-  }
 }
 
 * { box-sizing: border-box; }
@@ -261,8 +238,29 @@ main {
   border-color: transparent;
 }
 
-.arrival-info {
+.arrival-info,
+.duration-info {
   font-variant-numeric: tabular-nums;
+}
+
+.more-btn {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 13px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 44px;
+}
+
+.more-btn:disabled {
+  color: var(--text-muted);
+  cursor: default;
 }
 
 .transfer-block {
