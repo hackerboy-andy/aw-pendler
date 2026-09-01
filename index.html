@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pendler MUC↔NUE</title>
+<meta name="description" content="Nächste RE1-Verbindung München Hbf ↔ Nürnberg Hbf, ohne Eingabe.">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Pendler">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="direction-switch" id="direction-switch" role="group" aria-label="Richtung">
+    <button type="button" class="dir-btn" id="btn-dir-a" aria-pressed="false"></button>
+    <button type="button" class="dir-btn" id="btn-dir-b" aria-pressed="false"></button>
+  </div>
+  <button type="button" class="refresh-btn" id="btn-refresh" aria-label="Aktualisieren">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
+  </button>
+</header>
+
+<main id="app">
+  <p class="status-line" id="status-line" aria-live="polite"></p>
+  <div class="error-banner" id="error-banner" role="alert" hidden></div>
+
+  <section id="primary-list" class="departure-list" aria-label="Nächste Verbindungen"></section>
+
+  <section id="secondary-wrap" class="secondary-wrap" hidden>
+    <h2 class="section-heading">Schneller mit Umstieg</h2>
+    <p class="section-hint">Kein direkter RE1 in den nächsten drei Stunden — hier geht's mit Umstieg früher los.</p>
+    <section id="secondary-list" class="departure-list" aria-label="Verbindungen mit Umstieg"></section>
+  </section>
+
+  <p class="empty-state" id="empty-state" hidden></p>
+</main>
+
+<footer class="footer">
+  <p>
+    Daten: <a href="https://transitous.org/sources/" target="_blank" rel="noopener">transitous.org</a> ·
+    Kontakt: <a href="mailto:andy.weinzierl@gmail.com">andy.weinzierl@gmail.com</a> ·
+    Ausweg: <a href="https://bahn.de" target="_blank" rel="noopener">bahn.de</a>
+  </p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
