@@ -253,13 +253,11 @@ main {
   vertical-align: middle;
 }
 
-.card-meta {
-  margin-top: 10px;
+.badge-row {
+  margin-top: 12px;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  font-size: 14px;
-  color: var(--text-muted);
+  align-items: center;
+  gap: 8px;
 }
 
 .line-badge {
@@ -269,8 +267,8 @@ main {
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 2px 8px;
+  border-radius: 999px;
+  padding: 3px 10px;
   font-size: 13px;
 }
 
@@ -280,17 +278,76 @@ main {
   border-color: transparent;
 }
 
-.arrival-info,
 .duration-info {
   font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 .duration-info.is-fast {
   background: var(--ontime-bg);
   color: var(--ontime);
   font-weight: 700;
-  border-radius: 6px;
-  padding: 2px 6px;
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.route-line {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.route-label {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.route-label-end {
+  text-align: right;
+}
+
+.route-track {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 28px;
+}
+
+.route-dot {
+  width: 7px;
+  height: 7px;
+  min-width: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.route-dot-end {
+  background: var(--text-muted);
+}
+
+.route-bar {
+  flex: 1;
+  height: 2px;
+  background: var(--border);
+  margin: 0 3px;
+}
+
+.card.is-fast .route-dot {
+  background: var(--ontime);
+}
+
+.route-line.is-cancelled {
+  opacity: 0.6;
+}
+
+.route-line.is-cancelled .route-bar {
+  background-image: repeating-linear-gradient(to right, var(--cancelled) 0, var(--cancelled) 3px, transparent 3px, transparent 6px);
+  background-color: transparent;
 }
 
 .more-btn {

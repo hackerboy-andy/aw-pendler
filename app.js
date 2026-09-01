@@ -158,7 +158,7 @@ async function loadDepartures(direction, { force = false } = {}) {
       hasDirectSoon,
     }));
     // Fresh data supersedes anything accumulated via "Später anzeigen".
-    moreState[direction] = { items: [], loading: false };
+    moreState[direction] = { items: [], secondaryItems: [], loading: false };
     state.lastError = null;
   } catch (err) {
     console.error('[pendler] fetch failed', err);
@@ -174,35 +174,45 @@ async function loadDepartures(direction, { force = false } = {}) {
 // sitting exactly on a page boundary (reproduced against the live API:
 // a cursor chain silently skipped the 05:00 direct RE1). A fresh
 // time-anchored query every click sidesteps that entirely.
-function lastShownDepartureIso(direction) {
+function lastShownDepartureIso(direction, key) {
   const raw = localStorage.getItem(cacheKey(direction));
   const payload = raw ? JSON.parse(raw) : null;
   const more = moreState[direction];
-  const all = (payload ? payload.primary : []).concat(more ? more.items : []);
+  const base = payload ? payload[key] || [] : [];
+  const extra = more ? more[key === 'primary' ? 'items' : 'secondaryItems'] || [] : [];
+  const all = base.concat(extra);
   if (all.length === 0) return new Date().toISOString();
   return all[all.length - 1].departure.sched;
 }
 
 async function onLoadMore() {
   const direction = getDirection();
-  if (!moreState[direction]) moreState[direction] = { items: [], loading: false };
+  if (!moreState[direction]) moreState[direction] = { items: [], secondaryItems: [], loading: false };
   const more = moreState[direction];
   if (more.loading) return;
 
   const { from, to } = stationsForDirection(direction);
-  const anchor = new Date(new Date(lastShownDepartureIso(direction)).getTime() + 60_000).toISOString();
+  const anchor = new Date(new Date(lastShownDepartureIso(direction, 'primary')).getTime() + 60_000).toISOString();
   more.loading = true;
   const btn = document.getElementById('btn-more');
   btn.disabled = true;
   btn.textContent = 'Lädt …';
 
   try {
-    const page = await fetchPlanPage(from.id, to.id, {
-      maxTransfers: 0,
-      numItineraries: FETCH_BATCH_SIZE,
-      time: anchor,
-    });
+    const requests = [
+      fetchPlanPage(from.id, to.id, { maxTransfers: 0, numItineraries: FETCH_BATCH_SIZE, time: anchor }),
+    ];
+    // Keep the "mit Umstieg" section extending alongside "später" too, once
+    // it's switched on — otherwise it only ever covers the first small batch.
+    if (state.showTransfers) {
+      const secAnchor = new Date(new Date(lastShownDepartureIso(direction, 'secondary')).getTime() + 60_000).toISOString();
+      requests.push(fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: FETCH_BATCH_SIZE, time: secAnchor }));
+    }
+    const [page, transferPage] = await Promise.all(requests);
     more.items.push(...page.itineraries);
+    if (transferPage) {
+      more.secondaryItems.push(...transferPage.itineraries.filter((it) => it.transfers >= 1));
+    }
   } catch (err) {
     console.error('[pendler] load-more failed', err);
     flashMessage('Gerade nicht ladbar — später nochmal versuchen');
@@ -329,7 +339,7 @@ function paintFromCache(direction) {
 
   const payload = JSON.parse(raw);
   const now = Date.now();
-  const more = moreState[direction] || (moreState[direction] = { items: [], loading: false });
+  const more = moreState[direction] || (moreState[direction] = { items: [], secondaryItems: [], loading: false });
 
   const primaryVisible = payload.primary.filter(withinEffectiveDuration).slice(0, NUM_ITINERARIES);
   const moreVisible = more.items.filter(withinEffectiveDuration);
@@ -338,7 +348,8 @@ function paintFromCache(direction) {
   const secondaryFilter = state.showTransfers
     ? (it) => scheduledDurationMin(it) <= TRANSFER_MAX_MIN
     : withinEffectiveDuration;
-  const secondaryVisible = (payload.secondary || []).filter(secondaryFilter).slice(0, NUM_ITINERARIES);
+  const secondaryAll = (payload.secondary || []).concat(more.secondaryItems || []);
+  const secondaryVisible = secondaryAll.filter(secondaryFilter).slice(0, NUM_ITINERARIES);
   if (secondaryVisible.length) {
     secWrap.hidden = false;
     renderList(secList, secondaryVisible, now);
@@ -353,7 +364,7 @@ function paintFromCache(direction) {
   if (!more.loading) moreBtn.textContent = 'Später anzeigen';
 
   const visibleTotal = primaryVisible.length + moreVisible.length + secondaryVisible.length;
-  const rawTotal = payload.primary.length + more.items.length + (payload.secondary || []).length;
+  const rawTotal = payload.primary.length + more.items.length + secondaryAll.length;
   emptyEl.hidden = visibleTotal > 0;
   if (visibleTotal === 0) {
     emptyEl.innerHTML = rawTotal > 0 && !state.showSlow
@@ -423,34 +434,47 @@ function renderCard(it, now) {
   top.appendChild(countdown);
   card.appendChild(top);
 
-  const meta = document.createElement('div');
-  meta.className = 'card-meta';
-
   const firstLeg = it.legs[0];
+
+  const badgeRow = document.createElement('div');
+  badgeRow.className = 'badge-row';
 
   const lineBadge = document.createElement('span');
   lineBadge.className = 'line-badge' + (firstLeg.isBus ? ' is-bus' : '');
   lineBadge.textContent = firstLeg.isBus ? `Bus ${firstLeg.line}` : firstLeg.line;
-  meta.appendChild(lineBadge);
-
-  if (firstLeg.fromTrack) {
-    const track = document.createElement('span');
-    track.textContent = `Gleis ${firstLeg.fromTrack}`;
-    meta.appendChild(track);
-  }
+  badgeRow.appendChild(lineBadge);
 
   const duration = document.createElement('span');
   duration.className = 'duration-info' + (isFast ? ' is-fast' : '');
   duration.textContent = formatDuration(scheduledDurationMin(it));
-  meta.appendChild(duration);
+  badgeRow.appendChild(duration);
 
-  const arrival = document.createElement('span');
-  arrival.className = 'arrival-info';
+  card.appendChild(badgeRow);
+
+  const route = document.createElement('div');
+  route.className = 'route-line' + (it.cancelled ? ' is-cancelled' : '');
+
+  const fromLabel = document.createElement('span');
+  fromLabel.className = 'route-label';
+  fromLabel.textContent = firstLeg.fromTrack ? `Gleis ${firstLeg.fromTrack}` : firstLeg.fromName;
+
+  const track = document.createElement('span');
+  track.className = 'route-track';
+  const dotStart = document.createElement('span');
+  dotStart.className = 'route-dot';
+  const bar = document.createElement('span');
+  bar.className = 'route-bar';
+  const dotEnd = document.createElement('span');
+  dotEnd.className = 'route-dot route-dot-end';
+  track.append(dotStart, bar, dotEnd);
+
+  const toLabel = document.createElement('span');
+  toLabel.className = 'route-label route-label-end';
   const arrDelayTxt = !it.cancelled && arrDelayMin > 0 ? ` (+${arrDelayMin})` : '';
-  arrival.textContent = `an ${formatTime(arrSchedMs)}${arrDelayTxt}`;
-  meta.appendChild(arrival);
+  toLabel.textContent = `an ${formatTime(arrSchedMs)}${arrDelayTxt}`;
 
-  card.appendChild(meta);
+  route.append(fromLabel, track, toLabel);
+  card.appendChild(route);
 
   if (it.legs.length > 1) {
     const block = document.createElement('div');
