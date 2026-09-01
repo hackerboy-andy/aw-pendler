@@ -115,36 +115,37 @@ main {
   margin: 0 auto;
 }
 
-.status-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 4px 4px 14px;
-}
-
 .status-line {
   font-size: 13px;
   color: var(--text-muted);
   min-height: 18px;
-  margin: 0;
+  margin: 4px 4px 10px;
 }
 
-.relax-btn {
-  border: none;
-  background: none;
-  color: var(--accent);
+.toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 4px 16px;
+}
+
+.chip-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
   font-size: 13px;
   font-weight: 600;
-  padding: 4px 0;
+  padding: 7px 12px;
+  border-radius: 999px;
   cursor: pointer;
   white-space: nowrap;
-  min-height: 28px;
+  min-height: 32px;
 }
 
-.relax-btn[aria-pressed="true"] {
-  color: var(--text-muted);
-  text-decoration: underline;
+.chip-btn[aria-pressed="true"] {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: transparent;
 }
 
 .inline-link {
@@ -181,8 +182,8 @@ main {
 }
 
 .card.is-fast {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent), var(--shadow);
+  border-color: var(--ontime);
+  box-shadow: 0 0 0 1px var(--ontime), var(--shadow);
 }
 
 .card-top {
@@ -285,8 +286,8 @@ main {
 }
 
 .duration-info.is-fast {
-  background: var(--accent-bg);
-  color: var(--accent);
+  background: var(--ontime-bg);
+  color: var(--ontime);
   font-weight: 700;
   border-radius: 6px;
   padding: 2px 6px;

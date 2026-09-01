@@ -17,12 +17,14 @@ const FETCH_BATCH_SIZE = 8;
 const MAX_DURATION_MIN = 130; // 2:10 Std — hide unusually slow routings by default
 const RELAXED_DURATION_MIN = 180; // 3:00 Std — one-tap escape hatch for a bad connection window
 const FAST_DURATION_MIN = 110; // 1:50 Std — highlight as a best pick
+const TRANSFER_MAX_MIN = 120; // 2:00 Std — cap for the manual "auch mit Umstieg" toggle
 const FETCH_TIMEOUT_MS = 12_000;
 const TICK_INTERVAL_MS = 15_000;
 
-// showSlow is a session-only override (not persisted) — a one-tap escape
-// hatch for "I'm stuck between two trains", not a settings toggle.
-const state = { lastError: null, showSlow: false };
+// Session-only overrides (not persisted) — one-tap escape hatches, not
+// settings: "I'm stuck between two trains" (showSlow) and "maybe a transfer
+// beats waiting for the next direct" (showTransfers).
+const state = { lastError: null, showSlow: false, showTransfers: false, transfersLoading: false };
 // Accumulated "Später anzeigen" pages per direction, in-memory only (not
 // persisted) — reset whenever a fresh network fetch lands for that direction.
 const moreState = {};
@@ -141,8 +143,10 @@ async function loadDepartures(direction, { force = false } = {}) {
       return t - now <= DIRECT_WINDOW_MS;
     });
 
+    // Fetched whenever no direct train is coming soon (the automatic
+    // fallback), or the user has manually switched on "auch mit Umstieg".
     let secondary = [];
-    if (!hasDirectSoon) {
+    if (!hasDirectSoon || state.showTransfers) {
       const withTransfer = await fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: FETCH_BATCH_SIZE });
       secondary = withTransfer.itineraries.filter((it) => it.transfers >= 1);
     }
@@ -151,6 +155,7 @@ async function loadDepartures(direction, { force = false } = {}) {
       fetchedAt: Date.now(),
       primary,
       secondary,
+      hasDirectSoon,
     }));
     // Fresh data supersedes anything accumulated via "Später anzeigen".
     moreState[direction] = { items: [], loading: false };
@@ -218,6 +223,47 @@ function onToggleRelax() {
   state.showSlow = !state.showSlow;
   updateRelaxButton();
   paintFromCache(getDirection());
+}
+
+function updateTransfersButton() {
+  const btn = document.getElementById('btn-transfers');
+  if (state.transfersLoading) {
+    btn.textContent = 'Lädt …';
+    return;
+  }
+  btn.textContent = state.showTransfers ? 'Nur direkt zeigen' : 'Auch mit Umstieg (< 2h)';
+  btn.setAttribute('aria-pressed', String(state.showTransfers));
+}
+
+async function onToggleTransfers() {
+  const direction = getDirection();
+  state.showTransfers = !state.showTransfers;
+  updateTransfersButton();
+
+  if (state.showTransfers) {
+    const raw = localStorage.getItem(cacheKey(direction));
+    const payload = raw ? JSON.parse(raw) : null;
+    // Transfer options are normally only fetched when no direct train is
+    // coming soon — fetch them on demand the first time this is switched on.
+    if (payload && (!payload.secondary || payload.secondary.length === 0)) {
+      const { from, to } = stationsForDirection(direction);
+      state.transfersLoading = true;
+      updateTransfersButton();
+      try {
+        const withTransfer = await fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: FETCH_BATCH_SIZE });
+        payload.secondary = withTransfer.itineraries.filter((it) => it.transfers >= 1);
+        localStorage.setItem(cacheKey(direction), JSON.stringify(payload));
+      } catch (err) {
+        console.error('[pendler] transfer fetch failed', err);
+        flashMessage('Umstiegsverbindungen gerade nicht ladbar');
+        state.showTransfers = false;
+      } finally {
+        state.transfersLoading = false;
+        updateTransfersButton();
+      }
+    }
+  }
+  paintFromCache(direction);
 }
 
 function onManualRefresh() {
@@ -289,10 +335,16 @@ function paintFromCache(direction) {
   const moreVisible = more.items.filter(withinEffectiveDuration);
   renderList(primaryList, primaryVisible.concat(moreVisible), now);
 
-  const secondaryVisible = (payload.secondary || []).filter(withinEffectiveDuration).slice(0, NUM_ITINERARIES);
+  const secondaryFilter = state.showTransfers
+    ? (it) => scheduledDurationMin(it) <= TRANSFER_MAX_MIN
+    : withinEffectiveDuration;
+  const secondaryVisible = (payload.secondary || []).filter(secondaryFilter).slice(0, NUM_ITINERARIES);
   if (secondaryVisible.length) {
     secWrap.hidden = false;
     renderList(secList, secondaryVisible, now);
+    document.getElementById('secondary-hint').textContent = payload.hasDirectSoon
+      ? 'Schnelle Alternative mit einmal Umstieg.'
+      : 'Kein direkter RE1 in den nächsten drei Stunden — hier geht’s mit Umstieg früher los.';
   } else {
     secWrap.hidden = true;
   }
@@ -476,12 +528,14 @@ function registerServiceWorker() {
 function init() {
   registerServiceWorker();
   updateRelaxButton();
+  updateTransfersButton();
 
   document.getElementById('btn-dir-a').addEventListener('click', () => switchDirection('MUC_NUE'));
   document.getElementById('btn-dir-b').addEventListener('click', () => switchDirection('NUE_MUC'));
   document.getElementById('btn-refresh').addEventListener('click', onManualRefresh);
   document.getElementById('btn-more').addEventListener('click', onLoadMore);
   document.getElementById('btn-relax').addEventListener('click', onToggleRelax);
+  document.getElementById('btn-transfers').addEventListener('click', onToggleTransfers);
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) loadDepartures(getDirection());
