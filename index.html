@@ -30,18 +30,11 @@
   <p class="status-line" id="status-line" aria-live="polite"></p>
   <div class="toggle-row">
     <button type="button" class="chip-btn" id="btn-relax" aria-pressed="false">Auch bis 3 Std zeigen</button>
-    <button type="button" class="chip-btn" id="btn-transfers" aria-pressed="false">Auch mit Umstieg (&lt; 2h)</button>
   </div>
   <div class="error-banner" id="error-banner" role="alert" hidden></div>
 
-  <section id="primary-list" class="departure-list" aria-label="Nächste Verbindungen"></section>
+  <section id="list" class="departure-list" aria-label="Nächste Verbindungen"></section>
   <button type="button" class="more-btn" id="btn-more" hidden>Später anzeigen</button>
-
-  <section id="secondary-wrap" class="secondary-wrap" hidden>
-    <h2 class="section-heading">Mit Umstieg</h2>
-    <p class="section-hint" id="secondary-hint"></p>
-    <section id="secondary-list" class="departure-list" aria-label="Verbindungen mit Umstieg"></section>
-  </section>
 
   <p class="empty-state" id="empty-state" hidden></p>
 </main>

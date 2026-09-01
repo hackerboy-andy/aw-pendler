@@ -257,6 +257,7 @@ main {
   margin-top: 12px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -276,6 +277,18 @@ main {
   background: var(--bus-bg);
   color: var(--bus);
   border-color: transparent;
+}
+
+.transfer-badge {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .duration-info {
@@ -388,24 +401,6 @@ main {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   min-width: 46px;
-}
-
-.transfer-note {
-  font-size: 13px;
-  color: var(--text-muted);
-  padding: 6px 0 2px;
-}
-
-.section-heading {
-  font-size: 17px;
-  font-weight: 700;
-  margin: 24px 4px 4px;
-}
-
-.section-hint {
-  font-size: 13px;
-  color: var(--text-muted);
-  margin: 0 4px 12px;
 }
 
 .empty-state {

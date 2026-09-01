@@ -9,22 +9,19 @@ const STATIONS = {
 
 const API_BASE = 'https://api.transitous.org/api/v3/plan';
 const MIN_FETCH_INTERVAL_MS = 60_000;
-const DIRECT_WINDOW_MS = 3 * 60 * 60 * 1000;
 const NUM_ITINERARIES = 4;
-// Fetch more than we display, since MAX_DURATION_MIN filters some out
+// Fetch more than we display, since the duration filter hides some out
 // (e.g. the occasional much-slower RB16 routing) — keeps the shown list at 4.
 const FETCH_BATCH_SIZE = 8;
 const MAX_DURATION_MIN = 130; // 2:10 Std — hide unusually slow routings by default
 const RELAXED_DURATION_MIN = 180; // 3:00 Std — one-tap escape hatch for a bad connection window
 const FAST_DURATION_MIN = 110; // 1:50 Std — highlight as a best pick
-const TRANSFER_MAX_MIN = 120; // 2:00 Std — cap for the manual "auch mit Umstieg" toggle
 const FETCH_TIMEOUT_MS = 12_000;
 const TICK_INTERVAL_MS = 15_000;
 
-// Session-only overrides (not persisted) — one-tap escape hatches, not
-// settings: "I'm stuck between two trains" (showSlow) and "maybe a transfer
-// beats waiting for the next direct" (showTransfers).
-const state = { lastError: null, showSlow: false, showTransfers: false, transfersLoading: false };
+// showSlow is a session-only override (not persisted) — a one-tap escape
+// hatch for "I'm stuck between two trains", not a settings toggle.
+const state = { lastError: null, showSlow: false };
 // Accumulated "Später anzeigen" pages per direction, in-memory only (not
 // persisted) — reset whenever a fresh network fetch lands for that direction.
 const moreState = {};
@@ -55,13 +52,15 @@ function cacheKey(dir) {
 
 // ---------- API ----------
 
-async function fetchPlanPage(fromId, toId, { maxTransfers, numItineraries, time }) {
+async function fetchPlanPage(fromId, toId, { numItineraries, time }) {
   const url = new URL(API_BASE);
   url.searchParams.set('fromPlace', fromId);
   url.searchParams.set('toPlace', toId);
   url.searchParams.set('numItineraries', String(numItineraries));
   url.searchParams.set('transitModes', 'REGIONAL_RAIL,BUS');
-  if (maxTransfers !== undefined) url.searchParams.set('maxTransfers', String(maxTransfers));
+  // maxTransfers=1: at most one change — the API already returns direct and
+  // one-transfer options interleaved by departure time in a single list.
+  url.searchParams.set('maxTransfers', '1');
   if (time) url.searchParams.set('time', time);
 
   const controller = new AbortController();
@@ -108,10 +107,6 @@ function scheduledDurationMin(it) {
   return Math.round((arr - dep) / 60000);
 }
 
-function withinMaxDuration(it) {
-  return scheduledDurationMin(it) <= MAX_DURATION_MIN;
-}
-
 function withinEffectiveDuration(it) {
   const max = state.showSlow ? RELAXED_DURATION_MIN : MAX_DURATION_MIN;
   return scheduledDurationMin(it) <= max;
@@ -135,30 +130,13 @@ async function loadDepartures(direction, { force = false } = {}) {
     // Stored unfiltered by duration — the display filter (strict 2:10h by
     // default, relaxed to 3h via the "Auch bis 3h zeigen" toggle) is applied
     // at render time so toggling never needs a fresh network request.
-    const primaryPage = await fetchPlanPage(from.id, to.id, { maxTransfers: 0, numItineraries: FETCH_BATCH_SIZE });
-    const primary = primaryPage.itineraries;
-
-    const hasDirectSoon = primary.filter(withinMaxDuration).some((it) => {
-      const t = new Date(it.departure.real || it.departure.sched).getTime();
-      return t - now <= DIRECT_WINDOW_MS;
-    });
-
-    // Fetched whenever no direct train is coming soon (the automatic
-    // fallback), or the user has manually switched on "auch mit Umstieg".
-    let secondary = [];
-    if (!hasDirectSoon || state.showTransfers) {
-      const withTransfer = await fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: FETCH_BATCH_SIZE });
-      secondary = withTransfer.itineraries.filter((it) => it.transfers >= 1);
-    }
-
+    const page = await fetchPlanPage(from.id, to.id, { numItineraries: FETCH_BATCH_SIZE });
     localStorage.setItem(cacheKey(direction), JSON.stringify({
       fetchedAt: Date.now(),
-      primary,
-      secondary,
-      hasDirectSoon,
+      items: page.itineraries,
     }));
     // Fresh data supersedes anything accumulated via "Später anzeigen".
-    moreState[direction] = { items: [], secondaryItems: [], loading: false };
+    moreState[direction] = { items: [], loading: false };
     state.lastError = null;
   } catch (err) {
     console.error('[pendler] fetch failed', err);
@@ -174,45 +152,31 @@ async function loadDepartures(direction, { force = false } = {}) {
 // sitting exactly on a page boundary (reproduced against the live API:
 // a cursor chain silently skipped the 05:00 direct RE1). A fresh
 // time-anchored query every click sidesteps that entirely.
-function lastShownDepartureIso(direction, key) {
+function lastShownDepartureIso(direction) {
   const raw = localStorage.getItem(cacheKey(direction));
   const payload = raw ? JSON.parse(raw) : null;
   const more = moreState[direction];
-  const base = payload ? payload[key] || [] : [];
-  const extra = more ? more[key === 'primary' ? 'items' : 'secondaryItems'] || [] : [];
-  const all = base.concat(extra);
+  const all = (payload ? payload.items : []).concat(more ? more.items : []);
   if (all.length === 0) return new Date().toISOString();
   return all[all.length - 1].departure.sched;
 }
 
 async function onLoadMore() {
   const direction = getDirection();
-  if (!moreState[direction]) moreState[direction] = { items: [], secondaryItems: [], loading: false };
+  if (!moreState[direction]) moreState[direction] = { items: [], loading: false };
   const more = moreState[direction];
   if (more.loading) return;
 
   const { from, to } = stationsForDirection(direction);
-  const anchor = new Date(new Date(lastShownDepartureIso(direction, 'primary')).getTime() + 60_000).toISOString();
+  const anchor = new Date(new Date(lastShownDepartureIso(direction)).getTime() + 60_000).toISOString();
   more.loading = true;
   const btn = document.getElementById('btn-more');
   btn.disabled = true;
   btn.textContent = 'Lädt …';
 
   try {
-    const requests = [
-      fetchPlanPage(from.id, to.id, { maxTransfers: 0, numItineraries: FETCH_BATCH_SIZE, time: anchor }),
-    ];
-    // Keep the "mit Umstieg" section extending alongside "später" too, once
-    // it's switched on — otherwise it only ever covers the first small batch.
-    if (state.showTransfers) {
-      const secAnchor = new Date(new Date(lastShownDepartureIso(direction, 'secondary')).getTime() + 60_000).toISOString();
-      requests.push(fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: FETCH_BATCH_SIZE, time: secAnchor }));
-    }
-    const [page, transferPage] = await Promise.all(requests);
+    const page = await fetchPlanPage(from.id, to.id, { numItineraries: FETCH_BATCH_SIZE, time: anchor });
     more.items.push(...page.itineraries);
-    if (transferPage) {
-      more.secondaryItems.push(...transferPage.itineraries.filter((it) => it.transfers >= 1));
-    }
   } catch (err) {
     console.error('[pendler] load-more failed', err);
     flashMessage('Gerade nicht ladbar — später nochmal versuchen');
@@ -233,78 +197,6 @@ function onToggleRelax() {
   state.showSlow = !state.showSlow;
   updateRelaxButton();
   paintFromCache(getDirection());
-}
-
-function updateTransfersButton() {
-  const btn = document.getElementById('btn-transfers');
-  if (state.transfersLoading) {
-    btn.textContent = 'Lädt …';
-    return;
-  }
-  btn.textContent = state.showTransfers ? 'Nur direkt zeigen' : 'Auch mit Umstieg (< 2h)';
-  btn.setAttribute('aria-pressed', String(state.showTransfers));
-}
-
-// Fetches transfer pages until they reach at least as far as the primary
-// list already has (via "Später anzeigen") — otherwise turning this on
-// *after* paging ahead would only backfill transfer options for today,
-// silently missing anything past the point primary already reached.
-async function ensureTransferCoverage(direction) {
-  const raw = localStorage.getItem(cacheKey(direction));
-  const payload = raw ? JSON.parse(raw) : null;
-  if (!payload) return;
-
-  const { from, to } = stationsForDirection(direction);
-  const more = moreState[direction] || (moreState[direction] = { items: [], secondaryItems: [], loading: false });
-
-  const primaryAll = payload.primary.concat(more.items);
-  const horizonMs = primaryAll.length
-    ? new Date(primaryAll[primaryAll.length - 1].departure.sched).getTime()
-    : Date.now();
-
-  let secondaryAll = (payload.secondary || []).concat(more.secondaryItems || []);
-  let anchor;
-
-  state.transfersLoading = true;
-  updateTransfersButton();
-  try {
-    for (let guard = 0; guard < 8; guard++) {
-      const coveredMs = secondaryAll.length
-        ? new Date(secondaryAll[secondaryAll.length - 1].departure.sched).getTime()
-        : 0;
-      if (secondaryAll.length && coveredMs >= horizonMs) break;
-
-      const page = await fetchPlanPage(from.id, to.id, { maxTransfers: 1, numItineraries: FETCH_BATCH_SIZE, time: anchor });
-      const filtered = page.itineraries.filter((it) => it.transfers >= 1);
-      if (filtered.length === 0) break;
-
-      if (secondaryAll.length === 0) {
-        payload.secondary = filtered;
-      } else {
-        more.secondaryItems.push(...filtered);
-      }
-      secondaryAll = secondaryAll.concat(filtered);
-      anchor = new Date(new Date(filtered[filtered.length - 1].departure.sched).getTime() + 60_000).toISOString();
-    }
-    localStorage.setItem(cacheKey(direction), JSON.stringify(payload));
-  } catch (err) {
-    console.error('[pendler] transfer fetch failed', err);
-    flashMessage('Umstiegsverbindungen gerade nicht ladbar');
-  } finally {
-    state.transfersLoading = false;
-    updateTransfersButton();
-  }
-}
-
-async function onToggleTransfers() {
-  const direction = getDirection();
-  state.showTransfers = !state.showTransfers;
-  updateTransfersButton();
-
-  if (state.showTransfers) {
-    await ensureTransferCoverage(direction);
-  }
-  paintFromCache(direction);
 }
 
 function onManualRefresh() {
@@ -340,9 +232,7 @@ function formatCountdown(depMs, now) {
 
 function paintFromCache(direction) {
   const raw = localStorage.getItem(cacheKey(direction));
-  const primaryList = document.getElementById('primary-list');
-  const secWrap = document.getElementById('secondary-wrap');
-  const secList = document.getElementById('secondary-list');
+  const list = document.getElementById('list');
   const emptyEl = document.getElementById('empty-state');
   const statusEl = document.getElementById('status-line');
   const errorBanner = document.getElementById('error-banner');
@@ -357,8 +247,7 @@ function paintFromCache(direction) {
   }
 
   if (!raw) {
-    primaryList.innerHTML = '';
-    secWrap.hidden = true;
+    list.innerHTML = '';
     moreBtn.hidden = true;
     emptyEl.hidden = false;
     emptyEl.innerHTML = state.lastError
@@ -370,34 +259,20 @@ function paintFromCache(direction) {
 
   const payload = JSON.parse(raw);
   const now = Date.now();
-  const more = moreState[direction] || (moreState[direction] = { items: [], secondaryItems: [], loading: false });
+  const more = moreState[direction] || (moreState[direction] = { items: [], loading: false });
 
-  const primaryVisible = payload.primary.filter(withinEffectiveDuration).slice(0, NUM_ITINERARIES);
-  const moreVisible = more.items.filter(withinEffectiveDuration);
-  renderList(primaryList, primaryVisible.concat(moreVisible), now);
-
-  const secondaryFilter = state.showTransfers
-    ? (it) => scheduledDurationMin(it) <= TRANSFER_MAX_MIN
-    : withinEffectiveDuration;
-  const secondaryAll = (payload.secondary || []).concat(more.secondaryItems || []);
-  const secondaryVisible = secondaryAll.filter(secondaryFilter).slice(0, NUM_ITINERARIES);
-  if (secondaryVisible.length) {
-    secWrap.hidden = false;
-    renderList(secList, secondaryVisible, now);
-    document.getElementById('secondary-hint').textContent = payload.hasDirectSoon
-      ? 'Schnelle Alternative mit einmal Umstieg.'
-      : 'Kein direkter RE1 in den nächsten drei Stunden — hier geht’s mit Umstieg früher los.';
-  } else {
-    secWrap.hidden = true;
-  }
+  // Base batch capped at 4 (the "next 4 departures" default view); anything
+  // accumulated via "später" is appended uncapped.
+  const displayList = payload.items.filter(withinEffectiveDuration).slice(0, NUM_ITINERARIES)
+    .concat(more.items.filter(withinEffectiveDuration));
+  renderList(list, displayList, now);
 
   moreBtn.hidden = false;
   if (!more.loading) moreBtn.textContent = 'Später anzeigen';
 
-  const visibleTotal = primaryVisible.length + moreVisible.length + secondaryVisible.length;
-  const rawTotal = payload.primary.length + more.items.length + secondaryAll.length;
-  emptyEl.hidden = visibleTotal > 0;
-  if (visibleTotal === 0) {
+  const rawTotal = payload.items.length + more.items.length;
+  emptyEl.hidden = displayList.length > 0;
+  if (displayList.length === 0) {
     emptyEl.innerHTML = rawTotal > 0 && !state.showSlow
       ? `Nur langsamere Verbindungen gefunden. <button type="button" class="inline-link" id="btn-empty-relax">Auch bis 3h zeigen</button>.`
       : `Keine Verbindungen gefunden. <a href="https://bahn.de" target="_blank" rel="noopener">Auf bahn.de nachsehen</a>.`;
@@ -416,7 +291,7 @@ function renderList(container, itineraries, now) {
 }
 
 function renderCard(it, now) {
-  const isFast = !it.cancelled && scheduledDurationMin(it) <= FAST_DURATION_MIN;
+  const isFast = !it.cancelled && it.transfers === 0 && scheduledDurationMin(it) <= FAST_DURATION_MIN;
   const card = document.createElement('article');
   card.className = 'card' + (it.cancelled ? ' is-cancelled' : '') + (isFast ? ' is-fast' : '');
 
@@ -475,6 +350,13 @@ function renderCard(it, now) {
   lineBadge.textContent = firstLeg.isBus ? `Bus ${firstLeg.line}` : firstLeg.line;
   badgeRow.appendChild(lineBadge);
 
+  if (it.transfers > 0) {
+    const transferBadge = document.createElement('span');
+    transferBadge.className = 'transfer-badge';
+    transferBadge.textContent = `⇄ Umstieg in ${firstLeg.toName}`;
+    badgeRow.appendChild(transferBadge);
+  }
+
   const duration = document.createElement('span');
   duration.className = 'duration-info' + (isFast ? ' is-fast' : '');
   duration.textContent = formatDuration(scheduledDurationMin(it));
@@ -510,11 +392,6 @@ function renderCard(it, now) {
   if (it.legs.length > 1) {
     const block = document.createElement('div');
     block.className = 'transfer-block';
-
-    const note = document.createElement('div');
-    note.className = 'transfer-note';
-    note.textContent = `Umstieg in ${firstLeg.toName}`;
-    block.appendChild(note);
 
     it.legs.forEach((leg) => {
       const row = document.createElement('div');
@@ -583,14 +460,12 @@ function registerServiceWorker() {
 function init() {
   registerServiceWorker();
   updateRelaxButton();
-  updateTransfersButton();
 
   document.getElementById('btn-dir-a').addEventListener('click', () => switchDirection('MUC_NUE'));
   document.getElementById('btn-dir-b').addEventListener('click', () => switchDirection('NUE_MUC'));
   document.getElementById('btn-refresh').addEventListener('click', onManualRefresh);
   document.getElementById('btn-more').addEventListener('click', onLoadMore);
   document.getElementById('btn-relax').addEventListener('click', onToggleRelax);
-  document.getElementById('btn-transfers').addEventListener('click', onToggleTransfers);
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) loadDepartures(getDirection());
