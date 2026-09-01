@@ -19,9 +19,11 @@ const FAST_DURATION_MIN = 110; // 1:50 Std — highlight as a best pick
 const FETCH_TIMEOUT_MS = 12_000;
 const TICK_INTERVAL_MS = 15_000;
 
-// showSlow is a session-only override (not persisted) — a one-tap escape
-// hatch for "I'm stuck between two trains", not a settings toggle.
-const state = { lastError: null, showSlow: false };
+// Session-only overrides (not persisted) — one-tap escape hatches, not
+// settings. showSlow: "I'm stuck between two trains". showTransfers:
+// mix connections with a transfer into the list (hidden by default so
+// the list stays direct-only at a glance).
+const state = { lastError: null, showSlow: false, showTransfers: false };
 // Accumulated "Später anzeigen" pages per direction, in-memory only (not
 // persisted) — reset whenever a fresh network fetch lands for that direction.
 const moreState = {};
@@ -199,6 +201,18 @@ function onToggleRelax() {
   paintFromCache(getDirection());
 }
 
+function updateTransfersButton() {
+  const btn = document.getElementById('btn-transfers');
+  btn.textContent = state.showTransfers ? 'Nur direkt zeigen' : 'Auch mit Umstieg zeigen';
+  btn.setAttribute('aria-pressed', String(state.showTransfers));
+}
+
+function onToggleTransfers() {
+  state.showTransfers = !state.showTransfers;
+  updateTransfersButton();
+  paintFromCache(getDirection());
+}
+
 function onManualRefresh() {
   const now = Date.now();
   const lastFetchAt = Number(localStorage.getItem('pendler.lastFetchAt') || 0);
@@ -261,23 +275,29 @@ function paintFromCache(direction) {
   const now = Date.now();
   const more = moreState[direction] || (moreState[direction] = { items: [], loading: false });
 
+  const passesFilter = (it) => withinEffectiveDuration(it) && (state.showTransfers || it.transfers === 0);
+
   // Base batch capped at 4 (the "next 4 departures" default view); anything
   // accumulated via "später" is appended uncapped.
-  const displayList = payload.items.filter(withinEffectiveDuration).slice(0, NUM_ITINERARIES)
-    .concat(more.items.filter(withinEffectiveDuration));
+  const displayList = payload.items.filter(passesFilter).slice(0, NUM_ITINERARIES)
+    .concat(more.items.filter(passesFilter));
   renderList(list, displayList, now);
 
   moreBtn.hidden = false;
   if (!more.loading) moreBtn.textContent = 'Später anzeigen';
 
-  const rawTotal = payload.items.length + more.items.length;
+  const withinDuration = payload.items.concat(more.items).filter(withinEffectiveDuration);
   emptyEl.hidden = displayList.length > 0;
   if (displayList.length === 0) {
-    emptyEl.innerHTML = rawTotal > 0 && !state.showSlow
-      ? `Nur langsamere Verbindungen gefunden. <button type="button" class="inline-link" id="btn-empty-relax">Auch bis 3h zeigen</button>.`
-      : `Keine Verbindungen gefunden. <a href="https://bahn.de" target="_blank" rel="noopener">Auf bahn.de nachsehen</a>.`;
-    const relaxLink = document.getElementById('btn-empty-relax');
-    if (relaxLink) relaxLink.addEventListener('click', onToggleRelax);
+    if (withinDuration.length > 0 && !state.showTransfers) {
+      emptyEl.innerHTML = `Nur Verbindungen mit Umstieg gefunden. <button type="button" class="inline-link" id="btn-empty-transfers">Auch mit Umstieg zeigen</button>.`;
+      document.getElementById('btn-empty-transfers')?.addEventListener('click', onToggleTransfers);
+    } else if (withinDuration.length === 0 && (payload.items.length + more.items.length) > 0 && !state.showSlow) {
+      emptyEl.innerHTML = `Nur langsamere Verbindungen gefunden. <button type="button" class="inline-link" id="btn-empty-relax">Auch bis 3h zeigen</button>.`;
+      document.getElementById('btn-empty-relax')?.addEventListener('click', onToggleRelax);
+    } else {
+      emptyEl.innerHTML = `Keine Verbindungen gefunden. <a href="https://bahn.de" target="_blank" rel="noopener">Auf bahn.de nachsehen</a>.`;
+    }
   }
 
   const stamp = formatTime(payload.fetchedAt);
@@ -460,12 +480,14 @@ function registerServiceWorker() {
 function init() {
   registerServiceWorker();
   updateRelaxButton();
+  updateTransfersButton();
 
   document.getElementById('btn-dir-a').addEventListener('click', () => switchDirection('MUC_NUE'));
   document.getElementById('btn-dir-b').addEventListener('click', () => switchDirection('NUE_MUC'));
   document.getElementById('btn-refresh').addEventListener('click', onManualRefresh);
   document.getElementById('btn-more').addEventListener('click', onLoadMore);
   document.getElementById('btn-relax').addEventListener('click', onToggleRelax);
+  document.getElementById('btn-transfers').addEventListener('click', onToggleTransfers);
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) loadDepartures(getDirection());
