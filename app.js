@@ -50,14 +50,14 @@ function cacheKey(dir) {
 
 // ---------- API ----------
 
-async function fetchPlanPage(fromId, toId, { maxTransfers, numItineraries, pageCursor }) {
+async function fetchPlanPage(fromId, toId, { maxTransfers, numItineraries, time }) {
   const url = new URL(API_BASE);
   url.searchParams.set('fromPlace', fromId);
   url.searchParams.set('toPlace', toId);
   url.searchParams.set('numItineraries', String(numItineraries));
   url.searchParams.set('transitModes', 'REGIONAL_RAIL,BUS');
   if (maxTransfers !== undefined) url.searchParams.set('maxTransfers', String(maxTransfers));
-  if (pageCursor) url.searchParams.set('pageCursor', pageCursor);
+  if (time) url.searchParams.set('time', time);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -65,10 +65,7 @@ async function fetchPlanPage(fromId, toId, { maxTransfers, numItineraries, pageC
     const res = await fetch(url.toString(), { signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    return {
-      itineraries: (data.itineraries || []).map(parseItinerary),
-      nextPageCursor: data.nextPageCursor || null,
-    };
+    return { itineraries: (data.itineraries || []).map(parseItinerary) };
   } finally {
     clearTimeout(timer);
   }
@@ -145,10 +142,9 @@ async function loadDepartures(direction, { force = false } = {}) {
       fetchedAt: Date.now(),
       primary,
       secondary,
-      primaryCursor: primaryPage.nextPageCursor,
     }));
     // Fresh data supersedes anything accumulated via "Später anzeigen".
-    moreState[direction] = { items: [], cursor: primaryPage.nextPageCursor, loading: false };
+    moreState[direction] = { items: [], loading: false };
     state.lastError = null;
   } catch (err) {
     console.error('[pendler] fetch failed', err);
@@ -159,12 +155,28 @@ async function loadDepartures(direction, { force = false } = {}) {
   }
 }
 
+// Anchored on the last shown departure time rather than the API's own
+// pageCursor — MOTIS's cursor chaining occasionally drops the itinerary
+// sitting exactly on a page boundary (reproduced against the live API:
+// a cursor chain silently skipped the 05:00 direct RE1). A fresh
+// time-anchored query every click sidesteps that entirely.
+function lastShownDepartureIso(direction) {
+  const raw = localStorage.getItem(cacheKey(direction));
+  const payload = raw ? JSON.parse(raw) : null;
+  const more = moreState[direction];
+  const all = (payload ? payload.primary : []).concat(more ? more.items : []);
+  if (all.length === 0) return new Date().toISOString();
+  return all[all.length - 1].departure.sched;
+}
+
 async function onLoadMore() {
   const direction = getDirection();
+  if (!moreState[direction]) moreState[direction] = { items: [], loading: false };
   const more = moreState[direction];
-  if (!more || !more.cursor || more.loading) return;
+  if (more.loading) return;
 
   const { from, to } = stationsForDirection(direction);
+  const anchor = new Date(new Date(lastShownDepartureIso(direction)).getTime() + 60_000).toISOString();
   more.loading = true;
   const btn = document.getElementById('btn-more');
   btn.disabled = true;
@@ -174,10 +186,9 @@ async function onLoadMore() {
     const page = await fetchPlanPage(from.id, to.id, {
       maxTransfers: 0,
       numItineraries: FETCH_BATCH_SIZE,
-      pageCursor: more.cursor,
+      time: anchor,
     });
     more.items.push(...page.itineraries.filter(withinMaxDuration));
-    more.cursor = page.nextPageCursor;
   } catch (err) {
     console.error('[pendler] load-more failed', err);
     flashMessage('Gerade nicht ladbar — später nochmal versuchen');
@@ -251,7 +262,7 @@ function paintFromCache(direction) {
 
   const payload = JSON.parse(raw);
   const now = Date.now();
-  const more = moreState[direction] || (moreState[direction] = { items: [], cursor: payload.primaryCursor || null, loading: false });
+  const more = moreState[direction] || (moreState[direction] = { items: [], loading: false });
 
   renderList(primaryList, payload.primary.concat(more.items), now);
   if (payload.secondary && payload.secondary.length) {
@@ -261,7 +272,7 @@ function paintFromCache(direction) {
     secWrap.hidden = true;
   }
 
-  moreBtn.hidden = !more.cursor;
+  moreBtn.hidden = false;
   if (!more.loading) moreBtn.textContent = 'Später anzeigen';
 
   const isEmpty = payload.primary.length === 0 && (!payload.secondary || payload.secondary.length === 0);
