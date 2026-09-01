@@ -144,6 +144,11 @@ main {
   opacity: 0.7;
 }
 
+.card.is-fast {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), var(--shadow);
+}
+
 .card-top {
   display: flex;
   align-items: baseline;
@@ -241,6 +246,14 @@ main {
 .arrival-info,
 .duration-info {
   font-variant-numeric: tabular-nums;
+}
+
+.duration-info.is-fast {
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 2px 6px;
 }
 
 .more-btn {

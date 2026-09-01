@@ -15,6 +15,7 @@ const NUM_ITINERARIES = 4;
 // (e.g. the occasional much-slower RB16 routing) — keeps the shown list at 4.
 const FETCH_BATCH_SIZE = 8;
 const MAX_DURATION_MIN = 130; // 2:10 Std — hide unusually slow routings
+const FAST_DURATION_MIN = 110; // 1:50 Std — highlight as a best pick
 const FETCH_TIMEOUT_MS = 12_000;
 const TICK_INTERVAL_MS = 15_000;
 
@@ -280,8 +281,9 @@ function renderList(container, itineraries, now) {
 }
 
 function renderCard(it, now) {
+  const isFast = !it.cancelled && scheduledDurationMin(it) <= FAST_DURATION_MIN;
   const card = document.createElement('article');
-  card.className = 'card' + (it.cancelled ? ' is-cancelled' : '');
+  card.className = 'card' + (it.cancelled ? ' is-cancelled' : '') + (isFast ? ' is-fast' : '');
 
   const depSchedMs = new Date(it.departure.sched).getTime();
   const depRealMs = new Date(it.departure.real || it.departure.sched).getTime();
@@ -345,7 +347,7 @@ function renderCard(it, now) {
   }
 
   const duration = document.createElement('span');
-  duration.className = 'duration-info';
+  duration.className = 'duration-info' + (isFast ? ' is-fast' : '');
   duration.textContent = formatDuration(scheduledDurationMin(it));
   meta.appendChild(duration);
 
