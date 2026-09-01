@@ -252,15 +252,21 @@ function paintFromCache(direction) {
   const errorBanner = document.getElementById('error-banner');
   const moreBtn = document.getElementById('btn-more');
 
+  // A payload from an older schema version (e.g. the previous primary/
+  // secondary split) doesn't have `items` — treat it as no cache rather
+  // than crashing; the next fetch overwrites it with the current shape.
+  const payload = raw ? JSON.parse(raw) : null;
+  const hasValidPayload = payload && Array.isArray(payload.items);
+
   if (state.lastError) {
     errorBanner.hidden = false;
-    errorBanner.innerHTML = `Keine Verbindung zu transitous.org.${raw ? ' Zeige den letzten Stand.' : ''} ` +
+    errorBanner.innerHTML = `Keine Verbindung zu transitous.org.${hasValidPayload ? ' Zeige den letzten Stand.' : ''} ` +
       `<a href="https://bahn.de" target="_blank" rel="noopener">Auf bahn.de nachsehen</a>.`;
   } else {
     errorBanner.hidden = true;
   }
 
-  if (!raw) {
+  if (!hasValidPayload) {
     list.innerHTML = '';
     moreBtn.hidden = true;
     emptyEl.hidden = false;
@@ -271,7 +277,6 @@ function paintFromCache(direction) {
     return;
   }
 
-  const payload = JSON.parse(raw);
   const now = Date.now();
   const more = moreState[direction] || (moreState[direction] = { items: [], loading: false });
 
